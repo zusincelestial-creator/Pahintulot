@@ -1,0 +1,42 @@
+<!doctype html><html lang="tl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Celestial</title>
+<style>
+:root{--bg:#070711;--card:#0e0e1c;--line:#26263d;--mut:#7b7ba5;--ok:#27d98a;--bad:#e0345f;--acc:#7c6cff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#eee;font:15px system-ui,sans-serif;padding:16px;max-width:560px;margin:auto}
+h1{font-size:18px;letter-spacing:.2em}h2{font-size:15px;margin:0 0 8px}.c{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;margin:12px 0}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:10px}.m{color:var(--mut);font-size:12px}.v{font-size:20px;font-weight:700}.ok{color:var(--ok)}.bad{color:var(--bad)}
+button,select,input,textarea{width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);background:#14142a;color:#fff;font:inherit;margin-top:8px}
+button{font-weight:600;cursor:pointer}.go{background:#17855a}.stop{background:#a62240}.acc{background:linear-gradient(90deg,#8a7bff,#5b4ddb)}
+#log div{font:12px monospace;padding:6px 0;border-bottom:1px solid var(--line);color:var(--mut)}#log b{color:#fff}
+</style></head><body>
+<h1>CELESTIAL</h1><div class="m">Messenger control</div>
+<div class="g c"><div><div class="m">Messenger</div><div class="v" id="on">–</div></div><div><div class="m">Bot</div><div class="v" id="run">–</div></div>
+<div><div class="m">Server uptime</div><div class="v" id="su">–</div></div><div><div class="m">Bot uptime</div><div class="v" id="bu">–</div></div></div>
+<div class="c"><h2>Auto reply · all chats: <span id="auto"></span></h2><div class="m" id="st"></div><button class="go" onclick="post('auto',{on:!S.autoReply})">Toggle</button></div>
+<div class="c"><h2>Group chat</h2><div class="m">Piliin ang GC. Pag-Start, magse-send ng opener tapos auto reply (humanized, random skip).</div>
+<select id="gc" onchange="post('thread',{threadId:this.value})"></select><button onclick="threads()">Refresh list</button>
+<div class="g"><button class="go" onclick="post('start')">▶ Start</button><button class="stop" onclick="post('stop')">■ Stop</button>
+<button onclick="post('reconnect')">Reconnect</button><button onclick="post('disconnect')">Disconnect</button></div></div>
+<div class="c"><h2>Set all nicknames</h2><input id="nick" placeholder="Nickname para sa lahat ng members"><button class="acc" onclick="nicks()">Apply sa GC</button></div>
+<div class="c"><h2>Lock GC name: <span id="lk"></span></h2><input id="lname" placeholder="Pangalan ng GC"><div class="g"><button class="go" onclick="lock(1)">Lock</button><button class="stop" onclick="lock(0)">Unlock</button></div></div>
+<div class="c"><h2>Facebook session</h2><div class="m" id="ss"></div><textarea id="ck" rows="4" placeholder="Paste cookie / appstate (JSON array or c_user=...; xs=...)"></textarea><button class="acc" onclick="post('session',{cookie:ck.value}).then(()=>ck.value='')">Save & connect</button></div>
+<div class="c"><h2>Activity</h2><div class="m" id="err"></div><div id="log"></div></div>
+<script>
+let S={},K=localStorage.k||"";
+(async()=>{const n=await (await fetch('/api/needsetup')).json();if(n.setup){const pw=prompt("Unang bukas: gumawa ng dashboard password (min 6)");
+ const r=await fetch('/api/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:pw})});if(!r.ok)return alert((await r.json()).error);K=localStorage.k=pw}
+ else if(!K)K=localStorage.k=prompt("Dashboard password");load();setTimeout(threads,1200)})();const $=i=>document.getElementById(i);
+const dur=s=>`${s/3600|0}h ${s%3600/60|0}m ${s%60}s`;
+async function api(p,b){const r=await fetch('/api/'+p,{method:b?'POST':'GET',headers:{'content-type':'application/json','x-admin':K},body:b?JSON.stringify(b):undefined});
+ if(r.status==401){localStorage.k=K=prompt("Wrong password, try again");return}return r.json()}
+async function post(p,b){const r=await api(p,b||{});if(r&&r.error)alert(r.error);load()}
+async function load(){const s=await api('status');if(!s||s.error)return;S=s;
+ $('on').textContent=s.online?'ONLINE':'OFFLINE';$('on').className='v '+(s.online?'ok':'bad');$('run').textContent=s.running?'RUNNING':'PAUSED';$('run').className='v '+(s.running?'ok':'bad');
+ $('su').textContent=dur(s.serverUptime);$('bu').textContent=dur(s.botUptime);$('auto').textContent=s.autoReply?'ON':'OFF';$('auto').className=s.autoReply?'ok':'bad';
+ $('st').textContent=`Replies this hour: ${s.repliesHour} · Blocked by anti-spam: ${s.suppressed}`;$('lk').textContent=s.lock.on?'ON':'OFF';
+ $('ss').textContent=s.cookieSaved?`Cookie saved · ${s.uid||'not connected'}`:'Walang cookie';$('err').textContent=s.lastError||'';
+ $('log').innerHTML=s.log.map(l=>`<div><b>${l.who}</b> ${l.msg.replace(/</g,'&lt;')}<br>${new Date(l.t).toLocaleTimeString()}</div>`).join('')}
+async function threads(){const t=await api('threads')||[];$('gc').innerHTML='<option value="">— pili ng GC —</option>'+t.map(x=>`<option value="${x.id}" ${x.id==S.threadId?'selected':''}>${x.name.replace(/</g,'')}</option>`).join('')}
+function nicks(){if(!S.threadId||!$('nick').value)return alert('Pili ng GC at maglagay ng nickname');if(confirm('Ilalapat sa lahat ng members (mabagal, ~3s bawat isa).'))post('nicknames',{threadId:S.threadId,nickname:$('nick').value})}
+function lock(on){if(!S.threadId)return alert('Pili muna ng GC');post('lockname',{threadId:S.threadId,name:$('lname').value,on})}
+setInterval(load,3000);
+</script></body></html>
