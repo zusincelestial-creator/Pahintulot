@@ -54,6 +54,17 @@ function parseCookie(raw) {
 }
 
 // ---------- Messenger connection + watchdog ----------
+// Pangharang sa error na "Missing required parameters (reaction, messageID, threadID)":
+// kapag kulang ang parameter ng setMessageReaction, hindi na ito itutuloy (walang unhandled error)
+function guardReactions(api) {
+  const orig = api.setMessageReaction;
+  if (typeof orig !== "function") return api;
+  api.setMessageReaction = function (reaction, messageID, threadID, cb, ...rest) {
+    if (!reaction || !messageID || !threadID) { if (typeof cb === "function") cb(null); return Promise.resolve(); }
+    return orig.call(this, reaction, String(messageID), String(threadID), cb, ...rest);
+  };
+  return api;
+}
 function connect() {
   if (S.logging || !cfg.appState) return;
   clearTimeout(S.timer); S.nextRetry = null; S.logging = true; S.loginAt = Date.now();
@@ -61,7 +72,7 @@ function connect() {
   login({ appState: cfg.appState }, { online: true, selfListen: false, listenEvents: true, autoMarkRead: false }, (err, api) => {
     S.logging = false;
     if (err) { S.lastError = String(err.message || err.error || err); log("error", "login: " + S.lastError); setDiag(S.lastError); return scheduleRetry(); }
-    S.api = api; S.uid = String(api.getCurrentUserID()); S.online = true; S.attempts = 0; S.lastConnected = Date.now(); S.lastError = null; S.diag = null; H.probeFails = 0; H.sendFails = 0;
+    S.api = guardReactions(api); S.uid = String(api.getCurrentUserID()); S.online = true; S.attempts = 0; S.lastConnected = Date.now(); S.lastError = null; S.diag = null; H.probeFails = 0; H.sendFails = 0;
     log("system", "Messenger connected as " + S.uid);
     S.stopListen = api.listenMqtt((e, ev) => {
       if (e) { log("error", "listen: " + (e.message || e)); setDiag(e.message || e); return drop(); }
@@ -96,6 +107,18 @@ function allowed(ev) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const rnd = (a, b) => a + Math.random() * (b - a);
+// Random self-react: ang bot account mismo ang nagre-react sa sarili niyang reply
+const REACTS = ["👍", "❤", "😆", "😮"];
+async function reactSelf(tid, mid) {
+  try {
+    if (!S.api || !mid || !tid) return;
+    if (Math.random() >= (cfg.reactRate == null ? 0.25 : cfg.reactRate)) return;
+    await sleep(rnd(1500, 5000));
+    if (!S.api) return;
+    S.api.setMessageReaction(REACTS[Math.floor(Math.random() * REACTS.length)], String(mid), String(tid), err => { if (err) log("error", "react: " + (err.message || err)); }, true);
+  } catch (e) { log("error", "react: " + (e && e.message || e)); }
+}
+const sendTracked = (api, text, tid, cb, replyTo) => sendRaw(api, text, tid, (err, info) => { if (!err && info && info.messageID) reactSelf(tid, info.messageID); if (cb) cb(err, info); }, replyTo);
 function enforceName(tid) {
   if (!S.api || !cfg.lock.on || !cfg.lock.name) return;
   S.api.setTitle(cfg.lock.name, tid, e => log(e ? "error" : "lock", e ? "setTitle: " + (e.message || e) : "GC name restored"));
@@ -123,7 +146,7 @@ async function onEvent(ev) {
   const r = pickBanatReply(ev.threadID, POOL, []);
   const text = typeof r === "string" ? r : (r && (r.text || r.reply)) || POOL[Math.floor(Math.random() * POOL.length)];
   const now = Date.now(); S.replies.push(now); S.senders.set(ev.senderID, now); S.threads.get(ev.threadID).push(now);
-  const ok = await sendBanatReplyWithTyping(S.api, text, ev.threadID, null, { trafficSendMessage: sendRaw, incomingText: ev.body });
+  const ok = await sendBanatReplyWithTyping(S.api, text, ev.threadID, null, { trafficSendMessage: sendTracked, incomingText: ev.body });
   if (ok) { H.sendFails = 0; rememberBanatReply(ev.threadID, text, ev.senderID); log("bot", `reply -> ${ev.threadID}`); }
   else { H.sendFails++; setDiag("send failed"); if (H.sendFails >= 5) { H.sendFails = 0; log("watchdog", "5 send fails -> reconnect"); drop(); } }
 }
