@@ -17,15 +17,16 @@ button{font-weight:600;cursor:pointer}.go{background:#17855a}.stop{background:#a
 <div id="pmbox" style="display:none"><input id="pmt" placeholder="FB ID o profile link ng target"><button class="acc" onclick="pmGo()">I-PM + auto reply</button></div>
 <div class="m" style="margin-top:8px">Message na isesend pag pinindot ang Start (para makita kung naka-on na):</div>
 <input id="sm" onchange="post('startmsg',{text:this.value})"><button onclick="threads()">Refresh list</button>
-<div class="m" style="margin-top:8px">I-tap ang pangalan ng GC para piliin sa nickname/lock.</div><div id="gcs"></div>
+<div id="gcs"></div>
 <div class="g"><button onclick="post('reconnect')">Reconnect</button><button onclick="post('disconnect')">Disconnect</button></div></div>
+<div class="c"><h2>GC para sa Nickname &amp; Lock name</h2><div class="m">Hiwalay ito sa listahan ng auto reply sa taas.</div><select id="gsel" onchange="G=this.value"><option value="">— pumili ng GC —</option></select></div>
 <div class="c"><h2>Set all nicknames</h2><input id="nick" placeholder="Nickname para sa lahat ng members"><button class="acc" onclick="nicks()">Apply sa GC</button></div>
 <div class="c"><h2>Lock GC name: <span id="lk"></span></h2><input id="lname" placeholder="Pangalan ng GC"><div class="g"><button class="go" onclick="lock(1)">Lock</button><button class="stop" onclick="lock(0)">Unlock</button></div></div>
 <div class="c"><h2>Facebook session</h2><div class="m" id="ss"></div><textarea id="ck" rows="4" placeholder="Paste cookie / appstate (JSON array or c_user=...; xs=...)"></textarea><button class="acc" onclick="post('session',{cookie:ck.value}).then(()=>ck.value='')">Save & connect</button></div>
 <div class="c"><h2>Health</h2><div class="m" id="hl"></div><div id="dg" style="margin-top:6px;font-size:13px"></div></div>
 <div class="c"><h2>Activity</h2><div class="m" id="err"></div><div id="log"></div></div>
 <script>
-let S={},T=null,V=1,K=localStorage.k||"";
+let S={},T=null,G="",V=1,K=localStorage.k||"";
 load();setTimeout(threads,1200);const $=i=>document.getElementById(i);
 const dur=s=>`${s/3600|0}h ${s%3600/60|0}m ${s%60}s`;
 async function api(p,b){const r=await fetch('/api/'+p,{method:b?'POST':'GET',headers:{'content-type':'application/json','x-admin':encodeURIComponent((K||'').trim())},body:b?JSON.stringify(b):undefined});
@@ -37,15 +38,16 @@ async function load(){const s=await api('status');if(!s||s.error)return;S=s;
  $('st').textContent=`Replies this hour: ${s.repliesHour} · Blocked by anti-spam: ${s.suppressed}`;if(document.activeElement!==$('sm'))$('sm').value=s.startMessage;$('lk').textContent=s.lock.on?'ON':'OFF';
  const hh=s.health||{};$('hl').textContent=`Probe: ${hh.probeOk==null?'–':hh.probeOk?'OK':'FAIL'} · Ping: ${hh.pingOk==null?'–':hh.pingOk?'OK':'FAIL'} · Memory ${hh.memoryMB}/${hh.memLimit} MB · Retry #${s.attempts}`;$('dg').textContent=s.diag?s.diag.code+' — '+s.diag.hint:'Walang nakikitang problema';
  $('ss').textContent=s.cookieSaved?`Cookie saved · ${s.uid||'not connected'}`:'Walang cookie';$('err').textContent=s.lastError||'';
- $('log').innerHTML=s.log.map(l=>`<div><b>${l.who}</b> ${l.msg.replace(/</g,'&lt;')}<br>${new Date(l.t).toLocaleTimeString()}</div>`).join('')}
+ $('log').innerHTML=s.log.map(l=>`<div><b>${l.who}</b> ${l.msg.replace(/</g,'&lt;')}<br>${new Date(l.t).toLocaleTimeString()}</div>`).join('');if(s.online&&!TH.length&&Date.now()-(window.lt||0)>10000){window.lt=Date.now();threads()}}
 let TH=[];
 async function threads(){TH=await api('threads')||[];draw()}
 function pmGo(){const v=$('pmt').value;if(!v)return;post('pm',{target:v});$('pmt').value=''}
 function draw(){const A=S.active||[];$('pmbox').style.display=V?'none':'block';$('tg').className=V?'acc':'';$('tp').className=V?'':'acc';
 const extra=V?[]:A.filter(id=>!TH.find(x=>x.id==id)).map(id=>({id,group:false,name:'Target '+id}));
-$('gcs').innerHTML=TH.filter(x=>x.group==!!V).concat(extra).map(x=>`<div class="r"><div class="${x.id==T?'sel':''}" onclick="T='${x.id}';draw()">${x.name.replace(/</g,'&lt;')}<div class="m">${x.group?x.members+' members':'PM'}${x.id==T?' · napili':''}</div></div>
+fillG();$('gcs').innerHTML=TH.filter(x=>x.group==!!V).concat(extra).map(x=>`<div class="r"><div class="${x.id==T?'sel':''}" onclick="T='${x.id}';draw()">${x.name.replace(/</g,'&lt;')}<div class="m">${x.group?x.members+' members':'PM'}${x.id==T?' · napili':''}</div></div>
 <button class="${A.includes(x.id)?'stop':'go'}" onclick="post('${A.includes(x.id)?'gcstop':'gcstart'}',{threadId:'${x.id}'})">${A.includes(x.id)?'Stop':'Start'}</button></div>`).join('')}
-function nicks(){if(!T||!$('nick').value)return alert('Pili ng GC at maglagay ng nickname');if(confirm('Ilalapat sa lahat ng members (mabagal, ~3s bawat isa).'))post('nicknames',{threadId:T,nickname:$('nick').value})}
-function lock(on){if(!T)return alert('I-tap muna ang GC sa list');if(!TH.find(x=>x.id==T&&x.group))return alert('Lock name ay para sa GC lang');post('lockname',{threadId:T,name:$('lname').value,on})}
+function fillG(){const el=$('gsel');if(!el||document.activeElement===el)return;el.innerHTML='<option value="">— pumili ng GC —</option>'+TH.filter(x=>x.group).map(x=>`<option value="${x.id}"${x.id==G?' selected':''}>${x.name.replace(/</g,'&lt;')} (${x.members})</option>`).join('')}
+function nicks(){if(!G||!$('nick').value)return alert('Pumili ng GC sa "GC para sa Nickname & Lock name" at maglagay ng nickname');if(confirm('Ilalapat sa lahat ng members (mabagal, ~3s bawat isa).'))post('nicknames',{threadId:G,nickname:$('nick').value})}
+function lock(on){if(!G)return alert('Pumili muna ng GC sa "GC para sa Nickname & Lock name"');if(!TH.find(x=>x.id==G&&x.group))return alert('Lock name ay para sa GC lang');post('lockname',{threadId:G,name:$('lname').value,on})}
 setInterval(load,3000);
 </script></body></html>
