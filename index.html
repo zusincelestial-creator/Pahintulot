@@ -22,20 +22,20 @@ button{font-weight:600;cursor:pointer}.go{background:#17855a}.stop{background:#a
 <div class="c"><h2>Set all nicknames</h2><input id="nick" placeholder="Nickname para sa lahat ng members"><button class="acc" onclick="nicks()">Apply sa GC</button></div>
 <div class="c"><h2>Lock GC name: <span id="lk"></span></h2><input id="lname" placeholder="Pangalan ng GC"><div class="g"><button class="go" onclick="lock(1)">Lock</button><button class="stop" onclick="lock(0)">Unlock</button></div></div>
 <div class="c"><h2>Facebook session</h2><div class="m" id="ss"></div><textarea id="ck" rows="4" placeholder="Paste cookie / appstate (JSON array or c_user=...; xs=...)"></textarea><button class="acc" onclick="post('session',{cookie:ck.value}).then(()=>ck.value='')">Save & connect</button></div>
+<div class="c"><h2>Health</h2><div class="m" id="hl"></div><div id="dg" style="margin-top:6px;font-size:13px"></div></div>
 <div class="c"><h2>Activity</h2><div class="m" id="err"></div><div id="log"></div></div>
 <script>
 let S={},T=null,V=1,K=localStorage.k||"";
-(async()=>{const n=await (await fetch('/api/needsetup')).json();if(n.setup){const pw=prompt("Unang bukas: gumawa ng dashboard password (min 6)");
- const r=await fetch('/api/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:pw})});if(!r.ok)return alert((await r.json()).error);K=localStorage.k=(pw||"").trim()}
- else if(!K)K=localStorage.k=(prompt("Dashboard password")||"").trim();load();setTimeout(threads,1200)})();const $=i=>document.getElementById(i);
+load();setTimeout(threads,1200);const $=i=>document.getElementById(i);
 const dur=s=>`${s/3600|0}h ${s%3600/60|0}m ${s%60}s`;
 async function api(p,b){const r=await fetch('/api/'+p,{method:b?'POST':'GET',headers:{'content-type':'application/json','x-admin':encodeURIComponent((K||'').trim())},body:b?JSON.stringify(b):undefined});
- if(r.status==401){localStorage.k=K=(prompt("Wrong password, try again")||"").trim();return}return r.json()}
+ if(r.status==401){localStorage.k=K=(prompt("Password")||"").trim();return}return r.json()}
 async function post(p,b){const r=await api(p,b||{});if(r&&r.error)alert(r.error);await load();draw()}
 async function load(){const s=await api('status');if(!s||s.error)return;S=s;
  $('on').textContent=s.online?'ONLINE':'OFFLINE';$('on').className='v '+(s.online?'ok':'bad');$('run').textContent=s.running?'RUNNING':'PAUSED';$('run').className='v '+(s.running?'ok':'bad');
  $('su').textContent=dur(s.serverUptime);$('bu').textContent=dur(s.botUptime);$('auto').textContent=s.autoReply?'ON':'OFF';$('auto').className=s.autoReply?'ok':'bad';
  $('st').textContent=`Replies this hour: ${s.repliesHour} · Blocked by anti-spam: ${s.suppressed}`;if(document.activeElement!==$('sm'))$('sm').value=s.startMessage;$('lk').textContent=s.lock.on?'ON':'OFF';
+ const hh=s.health||{};$('hl').textContent=`Probe: ${hh.probeOk==null?'–':hh.probeOk?'OK':'FAIL'} · Ping: ${hh.pingOk==null?'–':hh.pingOk?'OK':'FAIL'} · Memory ${hh.memoryMB}/${hh.memLimit} MB · Retry #${s.attempts}`;$('dg').textContent=s.diag?s.diag.code+' — '+s.diag.hint:'Walang nakikitang problema';
  $('ss').textContent=s.cookieSaved?`Cookie saved · ${s.uid||'not connected'}`:'Walang cookie';$('err').textContent=s.lastError||'';
  $('log').innerHTML=s.log.map(l=>`<div><b>${l.who}</b> ${l.msg.replace(/</g,'&lt;')}<br>${new Date(l.t).toLocaleTimeString()}</div>`).join('')}
 let TH=[];
