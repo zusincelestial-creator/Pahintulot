@@ -99,7 +99,6 @@ const sendRaw = (api, text, tid, cb, replyTo) => api.sendMessage(text, tid, cb, 
 function allowed(ev) {
   const now = Date.now();
   S.replies = S.replies.filter(t => now - t < 3600e3);
-  if (S.replies.length >= cfg.hourlyMax) return false;
   if (now - (S.senders.get(ev.senderID) || 0) < cfg.senderCooldownS * 1000) return false;
   const th = (S.threads.get(ev.threadID) || []).filter(t => now - t < cfg.threadWindowS * 1000);
   S.threads.set(ev.threadID, th);
