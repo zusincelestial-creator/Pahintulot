@@ -23,11 +23,11 @@ button{font-weight:600;cursor:pointer}.go{background:#17855a}.stop{background:#a
 <script>
 let S={},K=localStorage.k||"";
 (async()=>{const n=await (await fetch('/api/needsetup')).json();if(n.setup){const pw=prompt("Unang bukas: gumawa ng dashboard password (min 6)");
- const r=await fetch('/api/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:pw})});if(!r.ok)return alert((await r.json()).error);K=localStorage.k=pw}
- else if(!K)K=localStorage.k=prompt("Dashboard password");load();setTimeout(threads,1200)})();const $=i=>document.getElementById(i);
+ const r=await fetch('/api/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:pw})});if(!r.ok)return alert((await r.json()).error);K=localStorage.k=(pw||"").trim()}
+ else if(!K)K=localStorage.k=(prompt("Dashboard password")||"").trim();load();setTimeout(threads,1200)})();const $=i=>document.getElementById(i);
 const dur=s=>`${s/3600|0}h ${s%3600/60|0}m ${s%60}s`;
-async function api(p,b){const r=await fetch('/api/'+p,{method:b?'POST':'GET',headers:{'content-type':'application/json','x-admin':K},body:b?JSON.stringify(b):undefined});
- if(r.status==401){localStorage.k=K=prompt("Wrong password, try again");return}return r.json()}
+async function api(p,b){const r=await fetch('/api/'+p,{method:b?'POST':'GET',headers:{'content-type':'application/json','x-admin':encodeURIComponent((K||'').trim())},body:b?JSON.stringify(b):undefined});
+ if(r.status==401){localStorage.k=K=(prompt("Wrong password, try again")||"").trim();return}return r.json()}
 async function post(p,b){const r=await api(p,b||{});if(r&&r.error)alert(r.error);load()}
 async function load(){const s=await api('status');if(!s||s.error)return;S=s;
  $('on').textContent=s.online?'ONLINE':'OFFLINE';$('on').className='v '+(s.online?'ok':'bad');$('run').textContent=s.running?'RUNNING':'PAUSED';$('run').className='v '+(s.running?'ok':'bad');
