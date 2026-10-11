@@ -7,8 +7,7 @@ const { pickBanatReply, rememberBanatReply } = require("./banat-memory");
 const PORT = process.env.PORT || 3000;
 const DATA = process.env.DATA_DIR || path.join(__dirname, "data");
 fs.mkdirSync(DATA, { recursive: true });
-const ADMIN_FILE = path.join(DATA, "admin.json");
-let ADMIN = process.env.ADMIN_PASSWORD || (safeRead(ADMIN_FILE).password || null);
+const ADMIN = process.env.ADMIN_PASSWORD || null;   // optional: kung walang env, walang login
 function safeDecode(v) { try { return decodeURIComponent(v || ""); } catch { return String(v || ""); } }
 const CFG_FILE = path.join(DATA, "config.json");
 const POOL = JSON.parse(fs.readFileSync(path.join(__dirname, "replies.json"), "utf8"));
@@ -24,7 +23,25 @@ function safeRead(f) { try { return JSON.parse(fs.readFileSync(f, "utf8")); } ca
 const S = { api: null, uid: null, online: false, logging: false, stopListen: null,
   started: Date.now(), botSince: null, lastConnected: null, lastDisconnected: null,
   attempts: 0, nextRetry: null, timer: null, lastError: null,
-  replies: [], suppressed: 0, senders: new Map(), threads: new Map(), log: [] };
+  replies: [], suppressed: 0, diag: null, loginAt: 0, senders: new Map(), threads: new Map(), log: [] };
+
+const H = { probeOk: null, probeAt: null, probeFails: 0, pingOk: null, pingAt: null, sendFails: 0 };
+const MEM_LIMIT = Number(process.env.MEMORY_LIMIT_MB || 450);
+const memMB = () => Math.round(process.memoryUsage().rss / 1048576);
+function diagnose(msg) {
+  const m = String(msg || "").toLowerCase();
+  if (m.includes("retrieving userid")) return { code: "COOKIE_OR_IP_BLOCK", hint: "Expired ang cookie o na-block ng Facebook ang server IP. Kumuha ng bagong cookie sa browser, i-verify ang account, tapos Save & connect." };
+  if (m.includes("checkpoint") || m.includes("956") || m.includes("verify")) return { code: "CHECKPOINT", hint: "May checkpoint ang account. Buksan ang Facebook sa browser at tapusin ang verification, tapos bagong cookie." };
+  if (m.includes("not logged in") || m.includes("logged out") || m.includes("login approval")) return { code: "LOGGED_OUT", hint: "Na-logout ang session. Mag-login ulit sa browser at i-paste ang bagong cookie." };
+  if (m.includes("rate") || m.includes("1545") || m.includes("spam")) return { code: "RATE_LIMIT", hint: "Na-limit ang account. Bawasan ang bilis, i-Stop muna ang ibang chats, at hayaang mag-cooldown." };
+  if (m.includes("send failed")) return { code: "SEND_FAIL", hint: "Paulit-ulit na hindi nakaka-send. Auto reconnect ang gagawin; kung tuloy-tuloy, posibleng restricted ang account." };
+  if (/econnreset|etimedout|enotfound|eai_again|network|timeout|socket/.test(m)) return { code: "NETWORK", hint: "Network issue sa server. Awtomatikong magre-retry." };
+  if (m.includes("library missing") || m.includes("cannot find module")) return { code: "MISSING_MODULE", hint: "Kulang ang package. I-check ang package.json at mag-redeploy." };
+  return { code: "UNKNOWN", hint: "Tingnan ang Activity log para sa detalye." };
+}
+function setDiag(msg) { S.diag = diagnose(msg); log("debug", `${S.diag.code}: ${S.diag.hint}`); }
+process.on("uncaughtException", e => { log("error", "uncaught: " + (e && e.message || e)); setDiag(e && e.message); });
+process.on("unhandledRejection", e => { log("error", "unhandled: " + (e && e.message || e)); setDiag(e && e.message); });
 
 function log(who, msg) { S.log.unshift({ t: Date.now(), who, msg: String(msg).slice(0, 300) }); S.log.length = Math.min(S.log.length, 80); console.log(`[${who}] ${msg}`); }
 
@@ -39,15 +56,15 @@ function parseCookie(raw) {
 // ---------- Messenger connection + watchdog ----------
 function connect() {
   if (S.logging || !cfg.appState) return;
-  clearTimeout(S.timer); S.nextRetry = null; S.logging = true;
-  let login; try { login = require("@dongdev/fca-unofficial"); } catch (e) { S.logging = false; return log("error", "fca library missing: " + e.message); }
+  clearTimeout(S.timer); S.nextRetry = null; S.logging = true; S.loginAt = Date.now();
+  let login; try { login = require("@dongdev/fca-unofficial"); } catch (e) { S.logging = false; log("error", "fca library missing: " + e.message); return setDiag("library missing"); }
   login({ appState: cfg.appState }, { online: true, selfListen: false, listenEvents: true, autoMarkRead: false }, (err, api) => {
     S.logging = false;
-    if (err) { S.lastError = String(err.message || err.error || err); log("error", "login: " + S.lastError); return scheduleRetry(); }
-    S.api = api; S.uid = String(api.getCurrentUserID()); S.online = true; S.attempts = 0; S.lastConnected = Date.now(); S.lastError = null;
+    if (err) { S.lastError = String(err.message || err.error || err); log("error", "login: " + S.lastError); setDiag(S.lastError); return scheduleRetry(); }
+    S.api = api; S.uid = String(api.getCurrentUserID()); S.online = true; S.attempts = 0; S.lastConnected = Date.now(); S.lastError = null; S.diag = null; H.probeFails = 0; H.sendFails = 0;
     log("system", "Messenger connected as " + S.uid);
     S.stopListen = api.listenMqtt((e, ev) => {
-      if (e) { log("error", "listen: " + (e.message || e)); return drop(); }
+      if (e) { log("error", "listen: " + (e.message || e)); setDiag(e.message || e); return drop(); }
       onEvent(ev);
     });
   });
@@ -107,7 +124,8 @@ async function onEvent(ev) {
   const text = typeof r === "string" ? r : (r && (r.text || r.reply)) || POOL[Math.floor(Math.random() * POOL.length)];
   const now = Date.now(); S.replies.push(now); S.senders.set(ev.senderID, now); S.threads.get(ev.threadID).push(now);
   const ok = await sendBanatReplyWithTyping(S.api, text, ev.threadID, null, { trafficSendMessage: sendRaw, incomingText: ev.body });
-  if (ok) { rememberBanatReply(ev.threadID, text, ev.senderID); log("bot", `reply -> ${ev.threadID}`); }
+  if (ok) { H.sendFails = 0; rememberBanatReply(ev.threadID, text, ev.senderID); log("bot", `reply -> ${ev.threadID}`); }
+  else { H.sendFails++; setDiag("send failed"); if (H.sendFails >= 5) { H.sendFails = 0; log("watchdog", "5 send fails -> reconnect"); drop(); } }
 }
 function gcStart(tid) {
   if (!S.online) throw new Error("Connect muna");
@@ -124,17 +142,15 @@ function gcStop(tid) {
 // ---------- HTTP ----------
 const app = express(); app.use(express.json({ limit: "1mb" }));
 app.get("/", (q, r) => r.sendFile(path.join(__dirname, "index.html")));
-app.post("/api/setup", (q, r) => {
-  const pw = String(q.body.password || "").trim(); if (ADMIN || pw.length < 6) return r.status(400).json({ error: ADMIN ? "Already set" : "Min 6 characters" });
-  ADMIN = pw; fs.writeFileSync(ADMIN_FILE, JSON.stringify({ password: pw })); r.json({ ok: true });
-});
-app.get("/api/needsetup", (q, r) => r.json({ setup: !ADMIN }));
-app.use("/api", (req, res, next) => ADMIN && safeDecode(req.get("x-admin")).trim() === String(ADMIN).trim() ? next() : res.status(401).json({ error: "unauthorized" }));
+app.get("/health", (q, r) => r.json({ ok: true, online: S.online, uptime: (Date.now() - S.started) / 1000 | 0 }));
+app.use("/api", (req, res, next) => !ADMIN || safeDecode(req.get("x-admin")).trim() === String(ADMIN).trim() ? next() : res.status(401).json({ error: "unauthorized" }));
 const status = () => ({
   online: S.online, running: S.online && cfg.active.length > 0, active: cfg.active, startMessage: cfg.startMessage, uid: S.uid, serverUptime: (Date.now() - S.started) / 1000 | 0,
   botUptime: S.botSince && cfg.active.length ? (Date.now() - S.botSince) / 1000 | 0 : 0, lastConnected: S.lastConnected, lastDisconnected: S.lastDisconnected,
   autoReply: cfg.autoReply, repliesHour: S.replies.length, suppressed: S.suppressed,
-  attempts: S.attempts, nextRetry: S.nextRetry, lastError: S.lastError, cookieSaved: !!cfg.appState, lock: cfg.lock, savedAt: cfg.savedAt, log: S.log.slice(0, 40)
+  attempts: S.attempts, nextRetry: S.nextRetry, lastError: S.lastError, diag: S.diag,
+  health: { probeOk: H.probeOk, probeAt: H.probeAt, pingOk: H.pingOk, pingAt: H.pingAt, sendFails: H.sendFails, memoryMB: memMB(), memLimit: MEM_LIMIT },
+  cookieSaved: !!cfg.appState, lock: cfg.lock, savedAt: cfg.savedAt, log: S.log.slice(0, 40)
 });
 app.get("/api/status", (q, r) => r.json(status()));
 app.post("/api/auto", (q, r) => { cfg.autoReply = !!q.body.on; save(); r.json(status()); });
@@ -174,4 +190,32 @@ app.get("/api/threads", (q, r) => {
   }))));
 });
 setInterval(() => { if (S.api && cfg.lock.on) S.api.getThreadInfo(cfg.lock.threadId, (e, i) => { if (!e && i && i.threadName !== cfg.lock.name) enforceName(cfg.lock.threadId); }); }, 300000);
-app.listen(PORT, () => { log("system", "server on " + PORT); if (cfg.appState) connect(); });
+
+// ---------- Watchdog / auto ping / auto debug ----------
+function probe() {
+  if (!S.api) return;
+  let done = false;
+  const fail = m => { H.probeOk = false; H.probeAt = Date.now(); H.probeFails++; setDiag(m); log("watchdog", `probe failed (${H.probeFails}/3): ${m}`);
+    if (H.probeFails >= 3) { H.probeFails = 0; log("watchdog", "probe failed 3x -> reconnect"); drop(); } };
+  const t = setTimeout(() => { if (!done) { done = true; fail("probe timeout"); } }, 25000);
+  try {
+    S.api.getThreadList(1, null, ["INBOX"], e => { if (done) return; done = true; clearTimeout(t);
+      if (e) fail(e.message || e); else { H.probeOk = true; H.probeFails = 0; H.probeAt = Date.now(); } });
+  } catch (e) { done = true; clearTimeout(t); fail(e.message); }
+}
+setInterval(probe, 3 * 60 * 1000);
+setInterval(() => {
+  if (S.logging && Date.now() - S.loginAt > 90000) { S.logging = false; log("watchdog", "login stuck -> retry"); setDiag("timeout"); scheduleRetry(); }
+  if (memMB() > MEM_LIMIT) { log("watchdog", `memory ${memMB()}MB > ${MEM_LIMIT}MB -> restart`); setTimeout(() => process.exit(1), 500); }
+}, 60000);
+async function selfPing() {
+  const urls = [`http://127.0.0.1:${PORT}/health`];
+  if (process.env.RAILWAY_PUBLIC_DOMAIN) urls.push(`https://${process.env.RAILWAY_PUBLIC_DOMAIN}/health`);
+  for (const u of urls) {
+    try { const r = await fetch(u, { signal: AbortSignal.timeout(10000) }); H.pingOk = r.ok; }
+    catch (e) { H.pingOk = false; log("ping", "failed " + u + ": " + e.message); }
+  }
+  H.pingAt = Date.now();
+}
+setInterval(selfPing, 4 * 60 * 1000);
+app.listen(PORT, () => { log("system", "server on " + PORT); if (cfg.appState) connect(); setTimeout(selfPing, 15000); });
