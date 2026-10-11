@@ -14,14 +14,14 @@ const CFG_FILE = path.join(DATA, "config.json");
 const POOL = JSON.parse(fs.readFileSync(path.join(__dirname, "replies.json"), "utf8"));
 
 const cfg = Object.assign({
-  appState: null, savedAt: null, autoReply: false, threadId: null,
+  appState: null, savedAt: null, autoReply: false, active: [], startMessage: "sige tumakbo ka na HAHAHAHAHA",
   skipRate: 0.3, senderCooldownS: 20, hourlyMax: 30, threadMax: 6, threadWindowS: 60,
-  lock: { on: false, name: "", threadId: null }, openers: ["gm mga ka-GC 👋", "uy andito na ako", "kamusta kayo"]
+  lock: { on: false, name: "", threadId: null }
 }, safeRead(CFG_FILE));
 const save = () => fs.writeFileSync(CFG_FILE, JSON.stringify(cfg, null, 2));
 function safeRead(f) { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return {}; } }
 
-const S = { api: null, uid: null, online: false, running: false, logging: false, stopListen: null,
+const S = { api: null, uid: null, online: false, logging: false, stopListen: null,
   started: Date.now(), botSince: null, lastConnected: null, lastDisconnected: null,
   attempts: 0, nextRetry: null, timer: null, lastError: null,
   replies: [], suppressed: 0, senders: new Map(), threads: new Map(), log: [] };
@@ -64,7 +64,7 @@ function scheduleRetry() {
   else log("watchdog", `reconnect #${S.attempts} in ${s}s`);
   S.nextRetry = Date.now() + s * 1000; clearTimeout(S.timer); S.timer = setTimeout(connect, s * 1000);
 }
-function disconnect() { S.manualOff = true; clearTimeout(S.timer); try { S.stopListen && S.stopListen(); } catch {} S.api = null; S.online = false; S.running = false; S.lastDisconnected = Date.now(); S.nextRetry = null; }
+function disconnect() { S.manualOff = true; clearTimeout(S.timer); try { S.stopListen && S.stopListen(); } catch {} S.api = null; S.online = false; S.lastDisconnected = Date.now(); S.nextRetry = null; }
 
 // ---------- Bot ----------
 const sendRaw = (api, text, tid, cb, replyTo) => api.sendMessage(text, tid, cb, replyTo || undefined);
@@ -98,8 +98,8 @@ async function onEvent(ev) {
     if (ev.logMessageData && ev.logMessageData.name !== cfg.lock.name) { await sleep(rnd(2000, 5000)); enforceName(ev.threadID); }
     return;
   }
-  if (ev.type !== "message" || !ev.body || String(ev.senderID) === S.uid || !S.running) return;
-  const target = cfg.autoReply || (cfg.threadId && ev.threadID === cfg.threadId);
+  if (ev.type !== "message" || !ev.body || String(ev.senderID) === S.uid || !S.online) return;
+  const target = cfg.autoReply || cfg.active.includes(ev.threadID);
   if (!target) return;
   if (Math.random() < cfg.skipRate) return;
   if (!allowed(ev)) { S.suppressed++; return; }
@@ -109,13 +109,16 @@ async function onEvent(ev) {
   const ok = await sendBanatReplyWithTyping(S.api, text, ev.threadID, null, { trafficSendMessage: sendRaw, incomingText: ev.body });
   if (ok) { rememberBanatReply(ev.threadID, text, ev.senderID); log("bot", `reply -> ${ev.threadID}`); }
 }
-async function startBot() {
-  if (!S.online) return log("error", "Connect first");
-  S.running = true; S.botSince = Date.now(); log("bot", "started");
-  if (cfg.threadId) {
-    const o = cfg.openers[Math.floor(Math.random() * cfg.openers.length)];
-    sendBanatReplyWithTyping(S.api, o, cfg.threadId, null, { trafficSendMessage: sendRaw, incomingText: "" });
-  }
+function gcStart(tid) {
+  if (!S.online) throw new Error("Connect muna");
+  if (cfg.active.includes(tid)) return;
+  cfg.active.push(tid);
+  if (!S.botSince) S.botSince = Date.now(); save();
+  const msg = cfg.startMessage || "on na";
+  S.api.sendMessage(msg, tid, e => log(e ? "error" : "bot", e ? "start msg: " + (e.message || e) : "ON -> " + tid));
+}
+function gcStop(tid) {
+  cfg.active = cfg.active.filter(x => x !== tid); if (!cfg.active.length) S.botSince = null; save(); log("bot", "OFF -> " + tid);
 }
 
 // ---------- HTTP ----------
@@ -128,16 +131,26 @@ app.post("/api/setup", (q, r) => {
 app.get("/api/needsetup", (q, r) => r.json({ setup: !ADMIN }));
 app.use("/api", (req, res, next) => ADMIN && safeDecode(req.get("x-admin")).trim() === String(ADMIN).trim() ? next() : res.status(401).json({ error: "unauthorized" }));
 const status = () => ({
-  online: S.online, running: S.running, uid: S.uid, serverUptime: (Date.now() - S.started) / 1000 | 0,
-  botUptime: S.running ? (Date.now() - S.botSince) / 1000 | 0 : 0, lastConnected: S.lastConnected, lastDisconnected: S.lastDisconnected,
-  autoReply: cfg.autoReply, threadId: cfg.threadId, repliesHour: S.replies.length, suppressed: S.suppressed,
+  online: S.online, running: S.online && cfg.active.length > 0, active: cfg.active, startMessage: cfg.startMessage, uid: S.uid, serverUptime: (Date.now() - S.started) / 1000 | 0,
+  botUptime: S.botSince && cfg.active.length ? (Date.now() - S.botSince) / 1000 | 0 : 0, lastConnected: S.lastConnected, lastDisconnected: S.lastDisconnected,
+  autoReply: cfg.autoReply, repliesHour: S.replies.length, suppressed: S.suppressed,
   attempts: S.attempts, nextRetry: S.nextRetry, lastError: S.lastError, cookieSaved: !!cfg.appState, lock: cfg.lock, savedAt: cfg.savedAt, log: S.log.slice(0, 40)
 });
 app.get("/api/status", (q, r) => r.json(status()));
 app.post("/api/auto", (q, r) => { cfg.autoReply = !!q.body.on; save(); r.json(status()); });
-app.post("/api/thread", (q, r) => { cfg.threadId = q.body.threadId || null; save(); r.json(status()); });
-app.post("/api/start", async (q, r) => { await startBot(); r.json(status()); });
-app.post("/api/stop", (q, r) => { S.running = false; log("bot", "stopped"); r.json(status()); });
+app.post("/api/gcstart", (q, r) => { try { gcStart(String(q.body.threadId)); r.json(status()); } catch (e) { r.status(400).json({ error: e.message }); } });
+function parseTarget(v) {
+  v = String(v || "").trim();
+  const m = v.match(/[?&]id=(\d{5,20})/) || v.match(/^(\d{5,20})$/) || v.match(/(?:facebook|fb|messenger)\.com\/(?:t\/)?(\d{5,20})\b/);
+  return m ? m[1] : null;
+}
+app.post("/api/pm", (q, r) => {
+  const id = parseTarget(q.body.target);
+  if (!id) return r.status(400).json({ error: "Kailangan ng numeric FB ID o link na profile.php?id=..." });
+  try { gcStart(id); r.json(status()); } catch (e) { r.status(400).json({ error: e.message }); }
+});
+app.post("/api/gcstop", (q, r) => { gcStop(String(q.body.threadId)); r.json(status()); });
+app.post("/api/startmsg", (q, r) => { cfg.startMessage = String(q.body.text || "").slice(0, 500); save(); r.json(status()); });
 app.post("/api/reconnect", (q, r) => { S.manualOff = false; if (S.online) drop(); S.attempts = 0; clearTimeout(S.timer); connect(); r.json(status()); });
 app.post("/api/disconnect", (q, r) => { disconnect(); r.json(status()); });
 app.post("/api/session", (q, r) => {
@@ -154,7 +167,11 @@ app.post("/api/lockname", (q, r) => {
 });
 app.get("/api/threads", (q, r) => {
   if (!S.api) return r.json([]);
-  S.api.getThreadList(50, null, ["INBOX"], (e, l) => r.json(e ? [] : l.filter(t => t.isGroup).map(t => ({ id: t.threadID, name: t.name || t.threadID }))));
+  S.api.getThreadList(100, null, ["INBOX"], (e, l) => r.json(e ? [] : l.map(t => ({
+    id: String(t.threadID), group: !!t.isGroup,
+    name: t.name || (t.isGroup ? "Unnamed group" : "Private chat " + String(t.threadID).slice(-4)),
+    members: (t.participantIDs || t.participants || []).length
+  }))));
 });
 setInterval(() => { if (S.api && cfg.lock.on) S.api.getThreadInfo(cfg.lock.threadId, (e, i) => { if (!e && i && i.threadName !== cfg.lock.name) enforceName(cfg.lock.threadId); }); }, 300000);
 app.listen(PORT, () => { log("system", "server on " + PORT); if (cfg.appState) connect(); });
