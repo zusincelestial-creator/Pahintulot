@@ -8,7 +8,8 @@ const PORT = process.env.PORT || 3000;
 const DATA = process.env.DATA_DIR || path.join(__dirname, "data");
 fs.mkdirSync(DATA, { recursive: true });
 const ADMIN_FILE = path.join(DATA, "admin.json");
-let ADMIN = process.env.ADMIN_PASSWORD || (safeRead(ADMIN_FILE).password || null);   // env optional; else set on first visit
+let ADMIN = process.env.ADMIN_PASSWORD || (safeRead(ADMIN_FILE).password || null);
+function safeDecode(v) { try { return decodeURIComponent(v || ""); } catch { return String(v || ""); } }
 const CFG_FILE = path.join(DATA, "config.json");
 const POOL = JSON.parse(fs.readFileSync(path.join(__dirname, "replies.json"), "utf8"));
 
@@ -67,7 +68,7 @@ function disconnect() { S.manualOff = true; clearTimeout(S.timer); try { S.stopL
 
 // ---------- Bot ----------
 const sendRaw = (api, text, tid, cb, replyTo) => api.sendMessage(text, tid, cb, replyTo || undefined);
-function allowed(ev) {                         // anti-spam gate
+function allowed(ev) {
   const now = Date.now();
   S.replies = S.replies.filter(t => now - t < 3600e3);
   if (S.replies.length >= cfg.hourlyMax) return false;
@@ -86,7 +87,7 @@ async function setAllNicknames(tid, nick) {
   if (!S.api) throw new Error("Not connected");
   const info = await new Promise((ok, no) => S.api.getThreadInfo(tid, (e, i) => e ? no(e) : ok(i)));
   const ids = info.participantIDs || []; log("nick", `setting "${nick}" for ${ids.length} members`);
-  for (const id of ids) {                        // slow + randomized to stay account-safe
+  for (const id of ids) {
     await new Promise(r => S.api.changeNickname(nick, tid, id, e => { if (e) log("error", "nick " + id + ": " + (e.message || e)); r(); }));
     await sleep(rnd(2500, 5000));
   }
@@ -100,7 +101,7 @@ async function onEvent(ev) {
   if (ev.type !== "message" || !ev.body || String(ev.senderID) === S.uid || !S.running) return;
   const target = cfg.autoReply || (cfg.threadId && ev.threadID === cfg.threadId);
   if (!target) return;
-  if (Math.random() < cfg.skipRate) return;                     // random skip
+  if (Math.random() < cfg.skipRate) return;
   if (!allowed(ev)) { S.suppressed++; return; }
   const r = pickBanatReply(ev.threadID, POOL, []);
   const text = typeof r === "string" ? r : (r && (r.text || r.reply)) || POOL[Math.floor(Math.random() * POOL.length)];
@@ -119,13 +120,13 @@ async function startBot() {
 
 // ---------- HTTP ----------
 const app = express(); app.use(express.json({ limit: "1mb" }));
-app.get("/", (q, r) => r.sendFile(path.join(__dirname, "index.html")));  // only index.html is public
-app.post("/api/setup", (q, r) => {                      // first-run password (only works once)
-  const pw = String(q.body.password || ""); if (ADMIN || pw.length < 6) return r.status(400).json({ error: ADMIN ? "Already set" : "Min 6 characters" });
+app.get("/", (q, r) => r.sendFile(path.join(__dirname, "index.html")));
+app.post("/api/setup", (q, r) => {
+  const pw = String(q.body.password || "").trim(); if (ADMIN || pw.length < 6) return r.status(400).json({ error: ADMIN ? "Already set" : "Min 6 characters" });
   ADMIN = pw; fs.writeFileSync(ADMIN_FILE, JSON.stringify({ password: pw })); r.json({ ok: true });
 });
 app.get("/api/needsetup", (q, r) => r.json({ setup: !ADMIN }));
-app.use("/api", (req, res, next) => ADMIN && req.get("x-admin") === ADMIN ? next() : res.status(401).json({ error: "unauthorized" }));
+app.use("/api", (req, res, next) => ADMIN && safeDecode(req.get("x-admin")).trim() === String(ADMIN).trim() ? next() : res.status(401).json({ error: "unauthorized" }));
 const status = () => ({
   online: S.online, running: S.running, uid: S.uid, serverUptime: (Date.now() - S.started) / 1000 | 0,
   botUptime: S.running ? (Date.now() - S.botSince) / 1000 | 0 : 0, lastConnected: S.lastConnected, lastDisconnected: S.lastDisconnected,
